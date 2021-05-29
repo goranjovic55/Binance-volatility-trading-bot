@@ -26,6 +26,9 @@ import importlib
 # used for directory handling
 import glob
 
+#gogo MOD telegram needs import request
+import requests
+
 # Needed for colorful console output Install with: python3 -m pip install colorama (Mac/Linux) or pip install colorama (PC)
 from colorama import init
 init()
@@ -68,6 +71,16 @@ class txcolors:
 # tracks profit/loss each session
 global session_profit
 session_profit = 0
+
+#gogo MOD WIN/LOSS COunter and global dynamic stoploss and takeprofit and trailing takeprofit etc
+global WIN_TRADE_COUNT
+WIN_TRADE_COUNT = 0
+global LOSS_TRADE_COUNT
+LOSS_TRADE_COUNT = 0
+global LAST_TRADE_WON
+LAST_TRADE_WON = 0
+global LAST_TRADE_LOST
+LAST_TRADE_LOST = 0
 
 
 # print with timestamps
@@ -361,7 +374,7 @@ def buy():
 def sell_coins():
     '''sell coins that have reached the STOP LOSS or TAKE PROFIT threshold'''
 
-    global hsp_head, session_profit
+global hsp_head, session_profit, WIN_TRADE_COUNT, LOSS_TRADE_COUNT, LAST_TRADE_WON, LAST_TRADE_LOST
 
     last_price = get_price(False) # don't populate rolling window
     #last_price = get_price(add_to_historical=True) # don't populate rolling window
@@ -420,7 +433,17 @@ def sell_coins():
                 # if sell is 10, fee is 0.0075
                 # for the above, buyFee + sellFee = 0.07875
                 profit = ((LastPrice - BuyPrice) * coins_sold[coin]['volume']) * (1-(buyFee + sellFee))
-                # LastPrice (10) - BuyPrice (5) = 5
+
+                #gogo MOD to trigger trade lost or won and to count lost or won trades
+                if profit > 0:
+                   WIN_TRADE_COUNT = WIN_TRADE_COUNT + 1
+                   LAST_TRADE_WON = 1
+                   write_log(f"Sell: {coins_sold[coin]['volume']} {coin} - {BuyPrice} - {LastPrice} Profit: {profit:.2f} {PriceChange-(TRADING_FEE*2):.2f}% - SP:{session_profit:.2f}% ${(QUANTITY * session_profit)/100:.2f} - W:{WIN_TRADE_COUNT} L:{LOSS_TRADE_COUNT}")
+                else:
+                   LOSS_TRADE_COUNT = LOSS_TRADE_COUNT + 1
+                   LAST_TRADE_LOST = 1
+                   write_log(f"Sell: {coins_sold[coin]['volume']} {coin} - {BuyPrice} - {LastPrice} Profit: {profit:.2f} {PriceChange-(TRADING_FEE*2):.2f}% - SP:{session_profit:.2f}% ${(QUANTITY * session_profit)/100:.2f} - W: {WIN_TRADE_COUNT} L:{LOSS_TRADE_COUNT}")
+
                 # 5 * coins_sold (1) = 5
                 # 5 * (1-(0.07875)) = 4.60625
                 # profit = 4.60625, it seems ok!
@@ -432,7 +455,7 @@ def sell_coins():
         # no action; print once every TIME_DIFFERENCE
         if hsp_head == 1:
             if len(coins_bought) > 0:
-                print(f"TP or SL not yet reached, not selling {coin} for now {BuyPrice} - {LastPrice} : {txcolors.SELL_PROFIT if PriceChange >= 0. else txcolors.SELL_LOSS}{PriceChange-(buyFee+sellFee):.2f}% Est: {(QUANTITY*(PriceChange-(buyFee+sellFee)))/100:.{decimals()}f} {PAIR_WITH}{txcolors.DEFAULT}")
+                print(f"TP:{TP:.{decimals()}f}:{coins_bought[coin]['take_profit']:.2f} or SL:{SL:.{decimals()}f}:{coins_bought[coin]['stop_loss']:.2f} not yet reached, not selling {coin} for now {BuyPrice} - {LastPrice} : {txcolors.SELL_PROFIT if PriceChange >= 0. else txcolors.SELL_LOSS}{PriceChange-(buyFee+sellFee):.2f}% Est: {(QUANTITY*(PriceChange-(buyFee+sellFee)))/100:.{decimals()}f} {PAIR_WITH}{txcolors.DEFAULT}")
 
     if hsp_head == 1 and len(coins_bought) == 0: print(f"No trade slots are currently in use")
 
@@ -469,6 +492,15 @@ def remove_from_portfolio(coins_sold):
     with open(coins_bought_file_path, 'w') as file:
         json.dump(coins_bought, file, indent=4)
 
+def telegram_bot_sendtext(bot_message):
+
+    bot_token = TELEGRAM_BOT_TOKEN
+    bot_chatID = TELEGRAM_BOT_ID
+    send_text = 'https://api.telegram.org/bot' + bot_token + '/sendMessage?chat_id=' + bot_chatID + '&parse_mode=Markdown&text=' + bot_message
+
+    response = requests.get(send_text)
+
+    return response.json()
 
 def write_log(logline):
     timestamp = datetime.now().strftime("%d/%m %H:%M:%S")
@@ -502,6 +534,8 @@ if __name__ == '__main__':
     LOG_FILE = parsed_config['script_options'].get('LOG_FILE')
     DEBUG_SETTING = parsed_config['script_options'].get('DEBUG')
     AMERICAN_USER = parsed_config['script_options'].get('AMERICAN_USER')
+    TELEGRAM_BOT_TOKEN = parsed_config['script_options']['TELEGRAM_BOT_TOKEN']
+    TELEGRAM_BOT_ID = parsed_config['script_options']['TELEGRAM_BOT_ID']
 
     # Load trading vars
     PAIR_WITH = parsed_config['trading_options']['PAIR_WITH']
@@ -520,6 +554,9 @@ if __name__ == '__main__':
     TRAILING_TAKE_PROFIT = parsed_config['trading_options']['TRAILING_TAKE_PROFIT']
     TRADING_FEE = parsed_config['trading_options']['TRADING_FEE']
     SIGNALLING_MODULES = parsed_config['trading_options']['SIGNALLING_MODULES']
+    DYNAMIC_WIN_LOSS_UP = parsed_config['trading_options']['DYNAMIC_WIN_LOSS_UP']
+    DYNAMIC_WIN_LOSS_DOWN = parsed_config['trading_options']['DYNAMIC_WIN_LOSS_DOWN']
+
     if DEBUG_SETTING or args.debug:
         DEBUG = True
 
@@ -536,7 +573,7 @@ if __name__ == '__main__':
         client = Client(access_key, secret_key, tld='us')
     else:
         client = Client(access_key, secret_key)
-        
+
     # If the users has a bad / incorrect API key.
     # this will stop the script from starting, and display a helpful error.
     api_ready, msg = test_api_key(client, BinanceAPIException)
@@ -611,4 +648,22 @@ if __name__ == '__main__':
         orders, last_price, volume = buy()
         update_portfolio(orders, last_price, volume)
         coins_sold = sell_coins()
+        #gogos MOD to have dynamic stoploss take profit and trailing stoploss
+        print(f'STOP_LOSS: {STOP_LOSS:.2f} - TAKE_PROFIT: {TAKE_PROFIT:.2f} - TRAILING_STOP_LOSS: {TRAILING_STOP_LOSS:.2f}')
+
+        if LAST_TRADE_WON == 1:
+           STOP_LOSS = STOP_LOSS + (STOP_LOSS * DYNAMIC_WIN_LOSS_UP) / 100
+           TAKE_PROFIT = TAKE_PROFIT + (TAKE_PROFIT * DYNAMIC_WIN_LOSS_UP) / 100
+           TRAILING_STOP_LOSS = TRAILING_STOP_LOSS + (TRAILING_STOP_LOSS * DYNAMIC_WIN_LOSS_UP) / 100
+           LAST_TRADE_WON = 0
+           print(f'Last Trade WON Changing STOP_LOSS, TAKE_PROFIT, TRAILING_STOP_LOSS')
+
+        if LAST_TRADE_LOST == 1:
+           STOP_LOSS = STOP_LOSS - (STOP_LOSS * DYNAMIC_WIN_LOSS_DOWN) / 100
+           TAKE_PROFIT = TAKE_PROFIT - (TAKE_PROFIT * DYNAMIC_WIN_LOSS_DOWN) / 100
+           TRAILING_STOP_LOSS = TRAILING_STOP_LOSS - (TRAILING_STOP_LOSS * DYNAMIC_WIN_LOSS_DOWN) / 100
+           LAST_TRADE_LOST = 0
+           print(f'Last Trade LOST Changing STOP_LOSS, TAKE_PROFIT, TRAILING_STOP_LOSS')
+
+
         remove_from_portfolio(coins_sold)
